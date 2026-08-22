@@ -1,0 +1,82 @@
+## Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+artifacts/
+publish/
+
+## Test results
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+[Cc]overage[Rr]eport/
+.coverlet/
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+!packages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.assets.json
+
+## Visual Studio / Rider / VS Code user state
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## Rider / ReSharper caches
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotCover
+.fake/
+
+## Build logs & temp
+*.binlog
+*.log
+*.tlog
+*.tmp
+*.cache
+*.pidb
+*.svclog
+*.pdb.meta
+StyleCopReport.xml
+
+## macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+.apdisk
+
+## Local secrets / environment
+*.local.json
+appsettings.*.local.json
+.env
+.env.local

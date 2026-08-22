@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- This project sits at the repo root, so its default **/*.cs glob would otherwise swallow
+         the test project's sources (and its bin/obj) as well. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Dormouse.Tests/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WolverineFx" Version="6.28.0" />
+    <!-- Wolverine generates the handler glue code at runtime; this package supplies the compiler -->
+    <PackageReference Include="WolverineFx.RuntimeCompilation" Version="6.28.0" />
+  </ItemGroup>
+
+</Project>
