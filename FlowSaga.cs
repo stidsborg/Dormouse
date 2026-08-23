@@ -6,7 +6,7 @@ namespace Dormouse;
 // from the generic Flow base class instead of being declared here.
 public class FlowSaga : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
 {
-    public override async Task Run(StartOrder message)
+    protected override async Task Run(StartOrder message)
     {
         Console.WriteLine("Starting flow!!!");
         var id = await Capture(Guid.NewGuid);

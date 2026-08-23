@@ -15,4 +15,10 @@ public class FlowsCache
             else
                 return _flows[id] = flow;
     }
+    
+    public void Set(string id, Flow flow)
+    {
+        lock (_lock)
+            _flows[id] = flow;
+    }
 }

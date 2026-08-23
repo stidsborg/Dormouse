@@ -1,4 +1,3 @@
-using System.Text;
 using Dormouse;
 using Dormouse.Messages;
 using Microsoft.Extensions.DependencyInjection;
@@ -59,7 +58,7 @@ void ShowState(string id)
 {
     var flow = sagas.Load<FlowSaga>(id);
     log.LogInformation("--> FlowSaga state for {Id}: {State}", id,
-        flow is null ? "(none)" : $"id={flow.Id}, {flow.FlowState.Count} message(s)");
+        flow is null ? "(none)" : $"id={flow.Id}, {flow.FlowState.Count} entries, at {flow.AtCheckPoint}");
 }
 
 void ShowMessages(string id)
@@ -68,15 +67,10 @@ void ShowMessages(string id)
     if (flow is null) return;
 
     log.LogInformation("--> state recorded on the flow:");
-    foreach (var entry in flow.FlowState)
-    {
-        var (stateType, effectId, type, payload) = Flow.Decode(entry);
-        log.LogInformation("      {Kind}{EffectId} {Type}: {Payload}",
-            stateType,
-            effectId is null ? "" : $" #{effectId}",
-            type.Name,
-            Encoding.UTF8.GetString(payload));
-    }
+    // Flow decodes its own state privately - FlowStateReader is the read side of that format.
+    foreach (var entry in FlowStateReader.Read(flow))
+        log.LogInformation("      {Kind} #{Index} {Type}: {Payload}",
+            entry.StateType, entry.Index, entry.Type.Name, entry.Payload.ToStringFromUtf8Bytes());
 }
 
 log.LogInformation("=== FlowSaga alone ===");
@@ -91,6 +85,11 @@ ShowState("order-1");
 
 // Nothing cascades this now that the Order saga is gone, so send it directly
 await Send(new OrderCompleted("order-1"));
+ShowState("order-1");
+
+// An effect that completed outside of Run reaches the flow as this message - it carries no
+// result, it just wakes the flow so it can carry on from what its state already holds.
+await Send(new Captured("order-1"));
 ShowState("order-1");
 
 // A TimeoutMessage is always scheduled, so publish it and wait for delivery

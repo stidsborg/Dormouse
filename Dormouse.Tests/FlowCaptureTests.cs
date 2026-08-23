@@ -1,44 +1,47 @@
 namespace Dormouse.Tests;
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using System.Threading.Tasks;
 using Dormouse.Messages;
 
+// Every test here is given a timeout. A flow that never signals its flush leaves the await in
+// StartOrHandle pending rather than failing, and an unfinished Flow does exactly that - without
+// a timeout the run does not end, it just stops.
 [TestClass]
 public sealed class FlowCaptureTests
 {
     private static readonly StartOrder Start = new("order-1", "Coffee grinder");
 
     // Wolverine resolves this from the container and hands it to the handler methods; here
-    // there is no container, so the tests pass the instance in themselves.
-    private static readonly DormouseContext SagaContext = new();
+    // there is no container, so the tests pass the instance in themselves. One per test rather
+    // than one for the class: the context owns the cache of running flows, so a shared one
+    // would hand the next test the flow this one left behind under "order-1".
+    private readonly DormouseContext SagaContext = new();
 
     // Stands in for a reload: storage hands back the recorded state, not the instance that
     // wrote it, so the replaying flow is a fresh object with a copy of FlowState.
     private static TFlow Reload<TFlow>(Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted> flow)
         where TFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>, new()
-        => new() { FlowState = [..flow.FlowState] };
+        => new() { Id = flow.Id, FlowState = [..flow.FlowState] };
 
-    private static IEnumerable<FlowStateEntry> Effects(
-        Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted> flow)
-        => flow.FlowState.Select(Flow.Decode).Where(e => e.StateType == StateType.Effect);
+    // Flow decodes its own state privately, so the tests read it back through FlowStateReader.
+    private static List<FlowStateEntry> Effects(Flow flow) => FlowStateReader.Effects(flow).ToList();
+    private static List<FlowStateEntry> Messages(Flow flow) => FlowStateReader.Messages(flow).ToList();
 
     private sealed class TwoEffectFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
     {
         public int Executions;
         public List<string> Captured = [];
 
-        public override async Task Run(StartOrder message)
+        protected override async Task Run(StartOrder message)
         {
             Captured.Add(await Capture(() => Task.FromResult($"first-{++Executions}")));
             Captured.Add(await Capture(() => Task.FromResult($"second-{++Executions}")));
         }
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task CaptureExecutesTheFuncAndReturnsItsResultOnTheFirstRun()
     {
         var flow = new TwoEffectFlow();
@@ -49,7 +52,7 @@ public sealed class FlowCaptureTests
         CollectionAssert.AreEqual(new[] { "first-1", "second-2" }, flow.Captured);
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task ReplayingAFlowReturnsTheCapturedResultsWithoutRunningTheFuncsAgain()
     {
         var flow = new TwoEffectFlow();
@@ -64,7 +67,7 @@ public sealed class FlowCaptureTests
         CollectionAssert.AreEqual(new[] { "first-1", "second-2" }, replayed.Captured);
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task ReplayDoesNotRecordTheSameEffectTwice()
     {
         var flow = new TwoEffectFlow();
@@ -75,39 +78,45 @@ public sealed class FlowCaptureTests
 
         // Two effects before and after, even though Run executed twice - the replay read
         // them rather than appending its own copies.
-        Assert.HasCount(2, Effects(flow).ToList());
-        Assert.HasCount(2, Effects(replayed).ToList());
+        Assert.HasCount(2, Effects(flow));
+        Assert.HasCount(2, Effects(replayed));
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task EffectsAreRecordedAsEffectEntriesNumberedInCaptureOrder()
     {
         var flow = new TwoEffectFlow();
 
         await flow.StartOrHandle(Start, "order-1", SagaContext);
 
-        var effects = Effects(flow).ToList();
+        var effects = Effects(flow);
         Assert.HasCount(2, effects);
-        Assert.AreEqual(0, effects[0].EffectId);
-        Assert.AreEqual(1, effects[1].EffectId);
+        Assert.AreEqual(0, effects[0].Index);
+        Assert.AreEqual(1, effects[1].Index);
         Assert.AreEqual(typeof(string), effects[0].Type);
         Assert.AreEqual("\"first-1\"", effects[0].Payload.ToStringFromUtf8Bytes());
         Assert.AreEqual("\"second-2\"", effects[1].Payload.ToStringFromUtf8Bytes());
     }
 
-    [TestMethod]
-    public async Task HandledMessagesAreRecordedAsMessageEntriesWithNoEffectId()
+    [TestMethod, Timeout(5000)]
+    public async Task HandledMessagesAreRecordedAsMessageEntriesNumberedInArrivalOrder()
     {
         var flow = new TwoEffectFlow();
         await flow.StartOrHandle(Start, "order-1", SagaContext);
 
         await flow.Handle(new PaymentReceived("order-1", 249.95m), SagaContext);
 
-        var messages = flow.FlowState.Select(Flow.Decode).Where(e => e.StateType == StateType.Message).ToList();
+        var messages = Messages(flow);
         Assert.HasCount(2, messages);
+        // The message that started the flow is recorded as the initial one; what arrives after
+        // it is an ordinary message entry.
+        Assert.AreEqual(StateType.InitialMessage, messages[0].StateType);
         Assert.AreEqual(typeof(StartOrder), messages[0].Type);
-        Assert.IsNull(messages[0].EffectId);
+        Assert.AreEqual(StateType.Message, messages[1].StateType);
         Assert.AreEqual(typeof(PaymentReceived), messages[1].Type);
+        // Numbered 0 and 1 even though two effect entries sit between them: messages are counted
+        // on their own sequence, so the captures in between do not push the indexes along.
+        CollectionAssert.AreEqual(new[] { 0, 1 }, messages.Select(e => e.Index).ToArray());
         Assert.AreEqual("""{"OrderId":"order-1","Amount":249.95}""", messages[1].Payload.ToStringFromUtf8Bytes());
     }
 
@@ -118,7 +127,7 @@ public sealed class FlowCaptureTests
         public bool ThrowOnSecond = true;
         public string? Second;
 
-        public override async Task Run(StartOrder message)
+        protected override async Task Run(StartOrder message)
         {
             await Capture(() => Task.FromResult($"first-{++FirstExecutions}"));
             Second = await Capture(() =>
@@ -129,14 +138,14 @@ public sealed class FlowCaptureTests
         }
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task AnEffectThatThrowsIsNotRecordedAndIsRetriedOnTheNextRun()
     {
         var flow = new FailingSecondEffectFlow();
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => flow.StartOrHandle(Start, "order-1", SagaContext));
 
         // Only the effect that completed made it into the state.
-        Assert.HasCount(1, Effects(flow).ToList());
+        Assert.HasCount(1, Effects(flow));
 
         var retried = Reload<FailingSecondEffectFlow>(flow);
         retried.ThrowOnSecond = false;
@@ -147,50 +156,25 @@ public sealed class FlowCaptureTests
         Assert.AreEqual(0, retried.FirstExecutions);
         Assert.AreEqual(1, retried.SecondExecutions);
         Assert.AreEqual("second", retried.Second);
-        CollectionAssert.AreEqual(new int?[] { 0, 1 }, Effects(retried).Select(e => e.EffectId).ToArray());
+        CollectionAssert.AreEqual(new[] { 0, 1 }, Effects(retried).Select(e => e.Index).ToArray());
     }
 
-    [TestMethod]
-    public async Task ACapturedMessageSuppliesAnEffectResultInsteadOfTheFuncRunning()
+    [TestMethod, Timeout(5000)]
+    public async Task ACapturedMessageWakesTheFlowWithoutRecordingAMessageOfItsOwn()
     {
         var flow = new FailingSecondEffectFlow();
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => flow.StartOrHandle(Start, "order-1", SagaContext));
 
-        // The second effect never completed, so its result arrives from outside instead. The
-        // func is still set to throw: if the replay ran it rather than reading the message,
-        // this would not get past the Handle call.
+        // Captured says an effect completed somewhere else, and nothing more than that: no
+        // result rides along on it, so nothing about it lands in the state - the flow reads
+        // what it needs out of what is already recorded.
         var reloaded = Reload<FailingSecondEffectFlow>(flow);
-        await reloaded.Handle(Captured.Create(1, "from-outside"), SagaContext);
+        var before = reloaded.FlowState.Count;
 
-        Assert.AreEqual(0, reloaded.SecondExecutions);
-        Assert.AreEqual("from-outside", reloaded.Second);
-        CollectionAssert.AreEqual(new int?[] { 0, 1 }, Effects(reloaded).Select(e => e.EffectId).ToArray());
-    }
+        await reloaded.Handle(new Captured("order-1"), SagaContext);
 
-    [TestMethod]
-    public async Task ACapturedMessageIsRecordedUnderTheTypeItWasSentAs()
-    {
-        var flow = new FailingSecondEffectFlow();
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => flow.StartOrHandle(Start, "order-1", SagaContext));
-
-        await flow.Handle(Captured.Create(1, "from-outside"), SagaContext);
-
-        // The entry it became is the one Capture would have written, type and all - a replay
-        // cannot tell the two apart.
-        var supplied = Effects(flow).Single(e => e.EffectId == 1);
-        Assert.AreEqual(typeof(string), supplied.Type);
-        Assert.AreEqual("\"from-outside\"", supplied.Payload.ToStringFromUtf8Bytes());
-    }
-
-    [TestMethod]
-    public void CreateRoundTripsThePayloadAndTheTypeItWasSerializedAs()
-    {
-        var (type, payload) = Captured.Create(3, new OrderShipped("order-1", "TRACK-123")).Decode();
-
-        Assert.AreEqual(typeof(OrderShipped), type);
-        Assert.AreEqual(
-            new OrderShipped("order-1", "TRACK-123"),
-            JsonSerializer.Deserialize<OrderShipped>(payload));
+        Assert.AreEqual(before, reloaded.FlowState.Count);
+        Assert.HasCount(1, Messages(reloaded));
     }
 
     private sealed class RecordingFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
@@ -199,15 +183,15 @@ public sealed class FlowCaptureTests
         public int Executions;
         public string? Captured;
 
-        public override async Task Run(StartOrder message)
+        protected override async Task Run(StartOrder message)
         {
             RunWith.Add(message);
             Captured = await Capture(() => Task.FromResult($"effect-{++Executions}"));
         }
     }
 
-    [TestMethod]
-    public async Task EveryMessageReplaysRunWithTheMessageThatStartedTheFlow()
+    [TestMethod, Timeout(5000)]
+    public async Task RunIsGivenTheMessageThatStartedTheFlowRatherThanTheOneBeingHandled()
     {
         var flow = new RecordingFlow();
 
@@ -215,13 +199,17 @@ public sealed class FlowCaptureTests
         await flow.Handle(new PaymentReceived("order-1", 249.95m), SagaContext);
         await flow.Handle(new OrderShipped("order-1", "TRACK-123"), SagaContext);
 
-        // Run saw the StartOrder all three times - never the message being handled.
-        Assert.HasCount(3, flow.RunWith);
-        CollectionAssert.AreEqual(new[] { Start, Start, Start }, flow.RunWith);
+        // Run is written against the start message and started once; the messages that follow
+        // are handed to it through its own state, never as the argument it runs on.
+        Assert.HasCount(1, flow.RunWith);
+        Assert.AreEqual(Start, flow.RunWith.Single());
+        CollectionAssert.AreEqual(
+            new[] { typeof(StartOrder), typeof(PaymentReceived), typeof(OrderShipped) },
+            Messages(flow).Select(e => e.Type).ToArray());
     }
 
-    [TestMethod]
-    public async Task ReplayingRunDoesNotReExecuteEffectsRecordedByAnEarlierMessage()
+    [TestMethod, Timeout(5000)]
+    public async Task LaterMessagesDoNotReExecuteEffectsRecordedByAnEarlierOne()
     {
         var flow = new RecordingFlow();
 
@@ -231,10 +219,10 @@ public sealed class FlowCaptureTests
 
         Assert.AreEqual(1, flow.Executions);
         Assert.AreEqual("effect-1", flow.Captured);
-        Assert.HasCount(1, Effects(flow).ToList());
+        Assert.HasCount(1, Effects(flow));
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task TheInitialMessageIsReadBackOutOfStateRatherThanHeldOnTo()
     {
         var flow = new RecordingFlow();
@@ -252,12 +240,14 @@ public sealed class FlowCaptureTests
         Assert.AreEqual("effect-1", reloaded.Captured);
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task AFlowWhoseStateDoesNotStartWithTheStartMessageRefusesToRun()
     {
         // Reached only if a "Handle" message is delivered to a flow that was never started,
-        // which would otherwise replay Run against a message it was not written for.
-        var flow = new RecordingFlow();
+        // which would otherwise replay Run against a message it was not written for. The id is
+        // set because Wolverine works it out from the message before the handler is called -
+        // what this flow is missing is recorded state, not an identity.
+        var flow = new RecordingFlow { Id = "order-1" };
 
         var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => flow.Handle(new PaymentReceived("order-1", 249.95m), SagaContext));
@@ -270,36 +260,50 @@ public sealed class FlowCaptureTests
     {
         public List<DormouseContext> SeenBy = [];
 
-        public override Task Run(StartOrder message)
+        protected override Task Run(StartOrder message)
         {
             SeenBy.Add(Context);
             return Task.CompletedTask;
         }
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task TheContextHandedToAHandlerIsWhatRunSees()
     {
         var flow = new ContextRecordingFlow();
 
         await flow.StartOrHandle(Start, "order-1", SagaContext);
         await flow.Handle(new PaymentReceived("order-1", 249.95m), SagaContext);
-        await flow.Handle(Captured.Create(0, "from-outside"), SagaContext);
+        await flow.Handle(new Captured("order-1"), SagaContext);
 
-        // Whatever the container resolved for this message is what the replay runs against -
-        // the same instance every time here, since it is registered as a singleton.
-        Assert.HasCount(3, flow.SeenBy);
+        // Whatever the container resolved for the message that started the flow is what Run
+        // runs against - the same instance every time here, since it is registered as a
+        // singleton, and every later message sets it again before waking the flow.
+        Assert.IsNotEmpty(flow.SeenBy);
         Assert.IsTrue(flow.SeenBy.TrueForAll(c => ReferenceEquals(c, SagaContext)));
     }
 
-    [TestMethod]
-    public void ReadingTheContextOutsideOfAHandlerFails()
+    private sealed class ContextOutsideAHandlerFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
+    {
+        // Run is protected, as it is on every flow - this is only here so the test can reach it
+        // without a message having been handled first.
+        public Task RunDirectly(StartOrder message) => Run(message);
+
+        protected override Task Run(StartOrder message)
+        {
+            _ = Context;
+            return Task.CompletedTask;
+        }
+    }
+
+    [TestMethod, Timeout(5000)]
+    public async Task ReadingTheContextOutsideOfAHandlerFails()
     {
         // Nothing set it, so it is not there to be read: the flow only has a context while a
         // message is being handled, and silently handing back null would hide that.
-        var flow = new ContextRecordingFlow();
+        var flow = new ContextOutsideAHandlerFlow();
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => flow.Run(Start));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => flow.RunDirectly(Start));
     }
 
     private sealed class MixedResultFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
@@ -309,7 +313,7 @@ public sealed class FlowCaptureTests
         public string? Nothing;
         public OrderShipped? Record;
 
-        public override async Task Run(StartOrder message)
+        protected override async Task Run(StartOrder message)
         {
             Number = await Capture(() => { Executions++; return Task.FromResult(42); });
             Nothing = await Capture(() => { Executions++; return Task.FromResult<string?>(null); });
@@ -317,7 +321,7 @@ public sealed class FlowCaptureTests
         }
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task ValueTypeNullAndRecordResultsAllSurviveAReplay()
     {
         var flow = new MixedResultFlow();
@@ -332,5 +336,25 @@ public sealed class FlowCaptureTests
         // were treated as absent the func would run again on every replay.
         Assert.IsNull(replayed.Nothing);
         Assert.AreEqual(new OrderShipped("order-1", "TRACK-123"), replayed.Record);
+    }
+
+    [TestMethod, Timeout(5000)]
+    public async Task MessageIndexesCarryOnAcrossAReloadRatherThanRestarting()
+    {
+        var flow = new TwoEffectFlow();
+        await flow.StartOrHandle(Start, "order-1", SagaContext);
+        await flow.Handle(new PaymentReceived("order-1", 249.95m), SagaContext);
+
+        // A reloaded flow has nothing in memory, so the index for the next message can only
+        // come from the state it folds - if it did not, this third message would collide with
+        // the first and overwrite it in the inbox.
+        var reloaded = Reload<TwoEffectFlow>(flow);
+        await reloaded.Handle(new OrderShipped("order-1", "TRACK-123"), SagaContext);
+
+        var messages = Messages(reloaded);
+        CollectionAssert.AreEqual(new[] { 0, 1, 2 }, messages.Select(e => e.Index).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { typeof(StartOrder), typeof(PaymentReceived), typeof(OrderShipped) },
+            messages.Select(e => e.Type).ToArray());
     }
 }

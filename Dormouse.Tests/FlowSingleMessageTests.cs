@@ -7,11 +7,14 @@ using Dormouse.Messages;
 
 // Flow<T1> is the whole of a flow that is only ever started - no follow-up messages, so
 // StartOrHandle and the Captured handler are all there is to it.
+//
+// Timeouts for the same reason as in FlowCaptureTests: a flow that never flushes leaves the
+// await pending instead of failing.
 [TestClass]
 public sealed class FlowSingleMessageTests
 {
     private static readonly StartOrder Start = new("order-1", "Coffee grinder");
-    private static readonly DormouseContext SagaContext = new();
+    private readonly DormouseContext SagaContext = new();
 
     private sealed class SingleMessageFlow : Flow<StartOrder>
     {
@@ -20,7 +23,7 @@ public sealed class FlowSingleMessageTests
         public string? Captured;
         public DormouseContext? SeenContext;
 
-        public override async Task Run(StartOrder message)
+        protected override async Task Run(StartOrder message)
         {
             RunWith.Add(message);
             SeenContext = Context;
@@ -29,12 +32,12 @@ public sealed class FlowSingleMessageTests
     }
 
     private static SingleMessageFlow Reload(SingleMessageFlow flow)
-        => new() { FlowState = [..flow.FlowState] };
+        => new() { Id = flow.Id, FlowState = [..flow.FlowState] };
 
-    private static IEnumerable<FlowStateEntry> Effects(SingleMessageFlow flow)
-        => flow.FlowState.Select(Flow.Decode).Where(e => e.StateType == StateType.Effect);
+    // Flow decodes its own state privately, so the tests read it back through FlowStateReader.
+    private static List<FlowStateEntry> Effects(SingleMessageFlow flow) => FlowStateReader.Effects(flow).ToList();
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task StartingASingleMessageFlowRunsItAndRecordsWhatItCaptured()
     {
         var flow = new SingleMessageFlow();
@@ -45,10 +48,10 @@ public sealed class FlowSingleMessageTests
         CollectionAssert.AreEqual(new[] { Start }, flow.RunWith);
         Assert.AreEqual("effect-1", flow.Captured);
         Assert.AreSame(SagaContext, flow.SeenContext);
-        Assert.HasCount(1, Effects(flow).ToList());
+        Assert.HasCount(1, Effects(flow));
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task ReplayingASingleMessageFlowReadsItsEffectsBackInsteadOfRunningThem()
     {
         var flow = new SingleMessageFlow();
@@ -59,27 +62,28 @@ public sealed class FlowSingleMessageTests
 
         Assert.AreEqual(0, replayed.Executions);
         Assert.AreEqual("effect-1", replayed.Captured);
-        Assert.HasCount(1, Effects(replayed).ToList());
+        Assert.HasCount(1, Effects(replayed));
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public async Task ACapturedMessageIsTheOneThingASingleMessageFlowCanBeHandedAfterStarting()
     {
         // Nothing else arrives for this flow, so an effect completing outside of Run is what
-        // moves it along: the result comes in as a message and the replay reads it.
+        // moves it along. The message says only that one did - no result rides along on it, so
+        // the flow picks that up out of its own recorded state.
         var flow = new SingleMessageFlow();
         await flow.StartOrHandle(Start, "order-1", SagaContext);
 
         var reloaded = Reload(flow);
-        await reloaded.Handle(Captured.Create(1, "from-outside"), SagaContext);
+        await reloaded.Handle(new Captured("order-1"), SagaContext);
 
         Assert.AreEqual(0, reloaded.Executions);
         Assert.AreEqual("effect-1", reloaded.Captured);
-        CollectionAssert.AreEqual(new int?[] { 0, 1 }, Effects(reloaded).Select(e => e.EffectId).ToArray());
+        Assert.HasCount(1, Effects(reloaded));
         Assert.AreSame(SagaContext, reloaded.SeenContext);
     }
 
-    [TestMethod]
+    [TestMethod, Timeout(5000)]
     public void BothFlowVariantsAreTheSameFlowUnderneath()
     {
         // Siblings, not one deriving from the other: what they share is the non-generic Flow
