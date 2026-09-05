@@ -16,7 +16,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../Dormouse.csproj"/>
+        <ProjectReference Include="../core/Dormouse.csproj"/>
     </ItemGroup>
 
 </Project>

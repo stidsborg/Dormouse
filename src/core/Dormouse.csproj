@@ -5,9 +5,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- This project sits at the repo root, so its default **/*.cs glob would otherwise swallow
-         the test project's sources (and its bin/obj) as well. -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);Dormouse.Tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
