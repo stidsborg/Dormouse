@@ -35,7 +35,7 @@ public sealed class FlowSingleMessageTests
         => new() { Id = flow.Id, FlowState = [..flow.FlowState] };
 
     // Flow decodes its own state privately, so the tests read it back through FlowStateReader.
-    private static List<FlowStateEntry> Effects(SingleMessageFlow flow) => FlowStateReader.Effects(flow).ToList();
+    private List<FlowStateEntry> Effects(SingleMessageFlow flow) => FlowStateReader.Effects(flow, SagaContext).ToList();
 
     [TestMethod, Timeout(5000)]
     public async Task StartingASingleMessageFlowRunsItAndRecordsWhatItCaptured()

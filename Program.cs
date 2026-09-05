@@ -38,6 +38,7 @@ await host.StartAsync();
 
 var bus = host.Services.GetRequiredService<IMessageBus>();
 var sagas = host.Services.GetRequiredService<InMemorySagaPersistor>();
+var context = host.Services.GetRequiredService<DormouseContext>();
 var log = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Demo");
 
 async Task Send(object message)
@@ -68,7 +69,7 @@ void ShowMessages(string id)
 
     log.LogInformation("--> state recorded on the flow:");
     // Flow decodes its own state privately - FlowStateReader is the read side of that format.
-    foreach (var entry in FlowStateReader.Read(flow))
+    foreach (var entry in FlowStateReader.Read(flow, context))
         log.LogInformation("      {Kind} #{Index} {Type}: {Payload}",
             entry.StateType, entry.Index, entry.Type.Name, entry.Payload.ToStringFromUtf8Bytes());
 }

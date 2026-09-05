@@ -11,6 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The tests reach the context's internals (FlowsCache, TypeHelper) directly rather than
+         having them made public for the tests' sake. -->
+    <InternalsVisibleTo Include="Dormouse.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="WolverineFx" Version="6.28.0" />
     <!-- Wolverine generates the handler glue code at runtime; this package supplies the compiler -->
     <PackageReference Include="WolverineFx.RuntimeCompilation" Version="6.28.0" />

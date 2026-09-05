@@ -26,8 +26,8 @@ public sealed class FlowCaptureTests
         => new() { Id = flow.Id, FlowState = [..flow.FlowState] };
 
     // Flow decodes its own state privately, so the tests read it back through FlowStateReader.
-    private static List<FlowStateEntry> Effects(Flow flow) => FlowStateReader.Effects(flow).ToList();
-    private static List<FlowStateEntry> Messages(Flow flow) => FlowStateReader.Messages(flow).ToList();
+    private List<FlowStateEntry> Effects(Flow flow) => FlowStateReader.Effects(flow, SagaContext).ToList();
+    private List<FlowStateEntry> Messages(Flow flow) => FlowStateReader.Messages(flow, SagaContext).ToList();
 
     private sealed class TwoEffectFlow : Flow<StartOrder, PaymentReceived, OrderShipped, OrderTimeout, OrderCompleted>
     {
@@ -165,15 +165,15 @@ public sealed class FlowCaptureTests
         var flow = new FailingSecondEffectFlow();
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => flow.StartOrHandle(Start, "order-1", SagaContext));
 
-        // Captured says an effect completed somewhere else, and nothing more than that: no
-        // result rides along on it, so nothing about it lands in the state - the flow reads
-        // what it needs out of what is already recorded.
+        // Captured says an effect completed somewhere else, and nothing more than that. It drives
+        // the flow on to the end, but it is not a message the flow was sent - so the only message
+        // on record afterwards is still the one that started it.
         var reloaded = Reload<FailingSecondEffectFlow>(flow);
-        var before = reloaded.FlowState.Count;
+        reloaded.ThrowOnSecond = false;
 
         await reloaded.Handle(new Captured("order-1"), SagaContext);
 
-        Assert.AreEqual(before, reloaded.FlowState.Count);
+        Assert.AreEqual("second", reloaded.Second);
         Assert.HasCount(1, Messages(reloaded));
     }
 
