@@ -1,4 +1,4 @@
 <Solution>
-  <Project Path="Dormouse.csproj" />
-  <Project Path="Dormouse.Tests/Dormouse.Tests.csproj" />
+  <Project Path="src/core/Dormouse.csproj" />
+  <Project Path="src/test/Dormouse.Tests.csproj" />
 </Solution>
